@@ -5,6 +5,7 @@ import net.minestom.server.ServerFlag;
 import net.minestom.server.network.ConnectionState;
 import net.minestom.server.network.NetworkBuffer;
 import net.minestom.server.network.packet.PacketParser;
+import net.minestom.server.network.packet.PacketRegistry.PacketInfo;
 import net.minestom.server.network.packet.client.ClientPacket;
 import net.minestom.server.network.packet.client.configuration.ClientFinishConfigurationPacket;
 import net.minestom.server.network.packet.client.handshake.ClientHandshakePacket;
@@ -28,8 +29,6 @@ import java.util.function.Predicate;
 import java.util.zip.DataFormatException;
 
 public sealed interface NetworkContext {
-    PacketParser.Server SERVER_PARSER = new PacketParser.Server();
-    PacketParser.Client CLIENT_PARSER = new PacketParser.Client();
 
     boolean read(Function<ByteBuffer, Integer> reader, Consumer<ClientPacket> consumer);
 
@@ -67,13 +66,15 @@ public sealed interface NetworkContext {
     }
 
     final class Async implements NetworkContext {
+        private final PacketParser.Server serverParser = new PacketParser.Server();
+        private final PacketParser.Client clientParser = new PacketParser.Client();
+
         final AtomicReference<ConnectionState> stateRef = new AtomicReference<>(ConnectionState.HANDSHAKE);
         final MpmcUnboundedXaddArrayQueue<Packet> packetWriteQueue = new MpmcUnboundedXaddArrayQueue<>(1024);
 
         final ReentrantLock writeLock = new ReentrantLock();
         final Condition writeCondition = writeLock.newCondition();
 
-        final MpmcUnboundedXaddArrayQueue<ClientPacket> packetReadQueue = new MpmcUnboundedXaddArrayQueue<>(1024);
         final ByteBuffer readBuffer = ByteBuffer.allocateDirect(ServerFlag.POOLED_BUFFER_SIZE);
         final ByteBuffer writeBuffer = ByteBuffer.allocateDirect(ServerFlag.POOLED_BUFFER_SIZE);
         ByteBuffer cacheBuffer; // Contains half-read packets
@@ -85,16 +86,14 @@ public sealed interface NetworkContext {
             final int length = reader.apply(buffer);
             if (length == -1) return false;
             this.cacheBuffer = null;
-            var queue = this.packetReadQueue;
-            readPackets(buffer.flip(), stateRef, clientPacket -> {
+            readPackets(clientParser, buffer.flip(), stateRef, clientPacket -> {
                 stateRef.set(nextState(clientPacket, stateRef.get()));
-                queue.relaxedOffer(clientPacket);
+                consumer.accept(clientPacket);
             });
             if (buffer.hasRemaining()) {
                 // Copy remaining data to cache buffer
                 this.cacheBuffer = ByteBuffer.allocateDirect(buffer.remaining()).put(buffer);
             }
-            queue.drain(consumer::accept);
             return true;
         }
 
@@ -112,7 +111,7 @@ public sealed interface NetworkContext {
             ByteBuffer buffer = this.writeBuffer.clear();
             Packet packet;
             while ((packet = packetWriteQueue.poll()) != null) {
-                NetworkContext.write(state(), packet, buffer, b -> {
+                NetworkContext.write(serverParser, state(), packet, buffer, b -> {
                     final int length = writer.apply(b);
                     b.compact();
                     if (length == -1) {
@@ -154,6 +153,9 @@ public sealed interface NetworkContext {
     }
 
     final class Sync implements NetworkContext {
+        private final PacketParser.Server serverParser = new PacketParser.Server();
+        private final PacketParser.Client clientParser = new PacketParser.Client();
+
         final AtomicReference<ConnectionState> stateRef = new AtomicReference<>(ConnectionState.HANDSHAKE);
         final Predicate<ByteBuffer> writer;
         final ArrayDeque<Packet> packetWriteQueue = new ArrayDeque<>();
@@ -174,7 +176,7 @@ public sealed interface NetworkContext {
             if (length == -1) return false;
             this.cacheBuffer = null;
             var queue = this.packetReadQueue;
-            readPackets(buffer.flip(), stateRef, clientPacket -> {
+            readPackets(clientParser, buffer.flip(), stateRef, clientPacket -> {
                 stateRef.set(nextState(clientPacket, stateRef.get()));
                 queue.relaxedOffer(clientPacket);
             });
@@ -196,7 +198,7 @@ public sealed interface NetworkContext {
             ByteBuffer buffer = this.buffer.clear();
             Packet packet;
             while ((packet = packetWriteQueue.poll()) != null) {
-                NetworkContext.write(state(), packet, buffer, b -> {
+                NetworkContext.write(serverParser, state(), packet, buffer, b -> {
                     final boolean result = writer.test(b);
                     b.compact();
                     return result;
@@ -211,7 +213,7 @@ public sealed interface NetworkContext {
         }
     }
 
-    static void readPackets(ByteBuffer buffer,
+    static void readPackets(PacketParser<ClientPacket> parser, ByteBuffer buffer,
                             AtomicReference<ConnectionState> stateRef,
                             Consumer<ClientPacket> consumer) {
         try {
@@ -219,7 +221,7 @@ public sealed interface NetworkContext {
                     (id, payload) -> {
                         final ConnectionState state = stateRef.get();
                         NetworkBuffer networkBuffer = new NetworkBuffer(payload);
-                        final ClientPacket packet = CLIENT_PARSER.parse(state, id, networkBuffer);
+                        final ClientPacket packet = parser.parse(state, id, networkBuffer);
                         payload.position(networkBuffer.readIndex());
                         consumer.accept(packet);
                     });
@@ -228,7 +230,9 @@ public sealed interface NetworkContext {
         }
     }
 
-    static void write(ConnectionState state, NetworkContext.Packet packet, ByteBuffer buffer, Predicate<ByteBuffer> fullCallback) {
+    static void write(PacketParser<ServerPacket> parser, ConnectionState state,
+                      Packet packet, ByteBuffer buffer,
+                      Predicate<ByteBuffer> fullCallback) {
         final int checkLength = buffer.limit() / 2;
         switch (packet) {
             case NetworkContext.Packet.PacketIdPair packetPair -> {
@@ -236,7 +240,8 @@ public sealed interface NetworkContext {
                 if (buffer.position() >= checkLength) {
                     if (!fullCallback.test(buffer)) return;
                 }
-                PacketUtils.writeFramedPacket(state, buffer, packetLoop, false);
+                final PacketInfo<ServerPacket> info = parser.stateRegistry(state).packetInfo(packetLoop.getClass());
+                PacketUtils.writeFramedPacket(buffer, info.id(), info.serializer(), packetLoop, 0);
             }
             case NetworkContext.Packet.PlayList playList -> {
                 final Collection<ServerPacket.Play> packets = playList.packets();
@@ -247,7 +252,8 @@ public sealed interface NetworkContext {
                     if (buffer.position() >= checkLength) {
                         if (!fullCallback.test(buffer)) return;
                     }
-                    PacketUtils.writeFramedPacket(state, buffer, packetLoop, false);
+                    final PacketInfo<ServerPacket> info = parser.stateRegistry(state).packetInfo(packetLoop.getClass());
+                    PacketUtils.writeFramedPacket(buffer, info.id(), info.serializer(), packetLoop, 0);
                 }
             }
         }
