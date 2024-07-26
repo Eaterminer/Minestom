@@ -40,8 +40,7 @@ public sealed interface NetworkContext {
     ConnectionState state();
 
     default void write(ServerPacket packet) {
-        final int id = SERVER_PARSER.stateRegistry(state()).packetInfo(packet.getClass()).id();
-        write(new Packet.PacketIdPair(packet, id));
+        write(new Packet.PacketIdPair(packet));
     }
 
     default void write(List<ServerPacket> packets) {
@@ -53,7 +52,7 @@ public sealed interface NetworkContext {
     }
 
     sealed interface Packet {
-        record PacketIdPair(ServerPacket packet, int id) implements Packet {
+        record PacketIdPair(ServerPacket packet) implements Packet {
         }
 
         record PlayList(List<ServerPacket.Play> packets, int[] exception) implements Packet {

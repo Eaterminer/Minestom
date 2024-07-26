@@ -45,7 +45,7 @@ public final class Broadcast {
             world.computePackets((id, packets, exceptions) -> {
                 World.Entry entry = world.entries.get(id);
                 if (packets.size() == exceptions.length) return;
-                entry.packetsConsumer.accept((List<ServerPacket.Play>) packets, exceptions);
+                entry.packetsConsumer.accept(packets, exceptions);
             });
         }
         this.broadcastPackets.clear();
