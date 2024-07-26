@@ -14,7 +14,7 @@ public sealed interface EntityQuery permits EntityQueryImpl {
 
     Range.Float distance();
 
-    Range.Integer experience();
+    Range.Int experience();
 
     Range.Float pitchRotation();
 
@@ -63,7 +63,7 @@ public sealed interface EntityQuery permits EntityQueryImpl {
         }
 
         @NotNull
-        Builder experience(Range.@NotNull Integer experience);
+        Builder experience(Range.@NotNull Int experience);
 
         @NotNull
         Builder pitchRotation(Range.@NotNull Float pitchRotation);

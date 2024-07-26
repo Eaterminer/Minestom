@@ -9,7 +9,7 @@ import java.util.Map;
 
 record EntityQueryImpl(Target target, Sort sort,
                        Range.Float distance,
-                       Range.Integer experience,
+                       Range.Int experience,
                        Range.Float pitchRotation,
                        Range.Float yawRotation,
                        Map<GameMode, Boolean> gameModes,
@@ -28,7 +28,7 @@ record EntityQueryImpl(Target target, Sort sort,
         private Target target;
         private Sort sort = Sort.ARBITRARY;
         private Range.Float distance;
-        private Range.Integer experience;
+        private Range.Int experience;
         private Range.Float pitchRotation;
         private Range.Float yawRotation;
         private Map<GameMode, Boolean> gameModes = new HashMap<>();
@@ -56,7 +56,7 @@ record EntityQueryImpl(Target target, Sort sort,
         }
 
         @Override
-        public @NotNull Builder experience(Range.@NotNull Integer experience) {
+        public @NotNull Builder experience(Range.@NotNull Int experience) {
             this.experience = experience;
             return this;
         }

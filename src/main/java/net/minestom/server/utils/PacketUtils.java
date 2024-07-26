@@ -8,6 +8,8 @@ import net.minestom.server.adventure.ComponentHolder;
 import net.minestom.server.adventure.MinestomAdventure;
 import net.minestom.server.network.ConnectionState;
 import net.minestom.server.network.NetworkBuffer;
+import net.minestom.server.network.packet.PacketParser;
+import net.minestom.server.network.packet.PacketRegistry;
 import net.minestom.server.network.packet.server.CachedPacket;
 import net.minestom.server.network.packet.server.FramedPacket;
 import net.minestom.server.network.packet.server.ServerPacket;
@@ -33,6 +35,8 @@ import java.util.zip.Inflater;
 public final class PacketUtils {
     public static final ObjectPool<ByteBuffer> PACKET_POOL = new ObjectPool<>(() -> ByteBuffer.allocateDirect(ServerFlag.MAX_PACKET_SIZE), ByteBuffer::clear);
     private static final ThreadLocal<Deflater> LOCAL_DEFLATER = ThreadLocal.withInitial(Deflater::new);
+
+    private static final PacketParser.Server SERVER_PACKET_PARSER = new PacketParser.Server();
 
     private PacketUtils() {
     }
@@ -132,20 +136,24 @@ public final class PacketUtils {
                                          @NotNull ByteBuffer buffer,
                                          @NotNull ServerPacket packet,
                                          boolean compression) {
-        writeFramedPacket(buffer, packet.getId(state), packet,
-                compression ? MinecraftServer.getCompressionThreshold() : 0);
+        final PacketRegistry<ServerPacket> registry = SERVER_PACKET_PARSER.stateRegistry(state);
+        final PacketRegistry.PacketInfo<ServerPacket> packetInfo = registry.packetInfo(packet.getClass());
+        final int id = packetInfo.id();
+        final NetworkBuffer.Type<ServerPacket> serializer = packetInfo.serializer();
+        writeFramedPacket(buffer, id, serializer, packet, compression ? MinecraftServer.getCompressionThreshold() : 0);
     }
 
-    public static void writeFramedPacket(@NotNull ByteBuffer buffer,
-                                         int id,
-                                         @NotNull NetworkBuffer.Writer writer,
-                                         int compressionThreshold) {
+    public static <T> void writeFramedPacket(@NotNull ByteBuffer buffer,
+                                             int id,
+                                             @NotNull NetworkBuffer.Type<T> type,
+                                             @NotNull T packet,
+                                             int compressionThreshold) {
         NetworkBuffer networkBuffer = new NetworkBuffer(buffer, false);
         if (compressionThreshold <= 0) {
             // Uncompressed format https://wiki.vg/Protocol#Without_compression
             final int lengthIndex = networkBuffer.skipWrite(3);
             networkBuffer.write(NetworkBuffer.VAR_INT, id);
-            networkBuffer.write(writer);
+            type.write(networkBuffer, packet);
             final int finalSize = networkBuffer.writeIndex() - (lengthIndex + 3);
             writeVarIntHeader(buffer, lengthIndex, finalSize);
             buffer.position(networkBuffer.writeIndex());
@@ -157,7 +165,7 @@ public final class PacketUtils {
 
         final int contentStart = networkBuffer.writeIndex();
         networkBuffer.write(NetworkBuffer.VAR_INT, id);
-        networkBuffer.write(writer);
+        type.write(networkBuffer, packet);
         final int packetSize = networkBuffer.writeIndex() - contentStart;
         final boolean compressed = packetSize >= compressionThreshold;
         if (compressed) {

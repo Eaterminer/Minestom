@@ -28,7 +28,8 @@ import java.util.function.Predicate;
 import java.util.zip.DataFormatException;
 
 public sealed interface NetworkContext {
-    PacketParser.Client PACKET_PARSER = new PacketParser.Client();
+    PacketParser.Server SERVER_PARSER = new PacketParser.Server();
+    PacketParser.Client CLIENT_PARSER = new PacketParser.Client();
 
     boolean read(Function<ByteBuffer, Integer> reader, Consumer<ClientPacket> consumer);
 
@@ -39,7 +40,8 @@ public sealed interface NetworkContext {
     ConnectionState state();
 
     default void write(ServerPacket packet) {
-        write(new Packet.PacketIdPair(packet, packet.getId(state())));
+        final int id = SERVER_PARSER.stateRegistry(state()).packetInfo(packet.getClass()).id();
+        write(new Packet.PacketIdPair(packet, id));
     }
 
     default void write(List<ServerPacket> packets) {
@@ -111,7 +113,7 @@ public sealed interface NetworkContext {
             ByteBuffer buffer = this.writeBuffer.clear();
             Packet packet;
             while ((packet = packetWriteQueue.poll()) != null) {
-                NetworkContext.write(packet, buffer, b -> {
+                NetworkContext.write(state(), packet, buffer, b -> {
                     final int length = writer.apply(b);
                     b.compact();
                     if (length == -1) {
@@ -195,7 +197,7 @@ public sealed interface NetworkContext {
             ByteBuffer buffer = this.buffer.clear();
             Packet packet;
             while ((packet = packetWriteQueue.poll()) != null) {
-                NetworkContext.write(packet, buffer, b -> {
+                NetworkContext.write(state(), packet, buffer, b -> {
                     final boolean result = writer.test(b);
                     b.compact();
                     return result;
@@ -218,7 +220,7 @@ public sealed interface NetworkContext {
                     (id, payload) -> {
                         final ConnectionState state = stateRef.get();
                         NetworkBuffer networkBuffer = new NetworkBuffer(payload);
-                        final ClientPacket packet = PACKET_PARSER.parse(state, id, networkBuffer);
+                        final ClientPacket packet = CLIENT_PARSER.parse(state, id, networkBuffer);
                         payload.position(networkBuffer.readIndex());
                         consumer.accept(packet);
                     });
@@ -227,28 +229,26 @@ public sealed interface NetworkContext {
         }
     }
 
-    static void write(NetworkContext.Packet packet, ByteBuffer buffer, Predicate<ByteBuffer> fullCallback) {
+    static void write(ConnectionState state, NetworkContext.Packet packet, ByteBuffer buffer, Predicate<ByteBuffer> fullCallback) {
         final int checkLength = buffer.limit() / 2;
         switch (packet) {
             case NetworkContext.Packet.PacketIdPair packetPair -> {
                 final ServerPacket packetLoop = packetPair.packet;
-                final int idLoop = packetPair.id;
                 if (buffer.position() >= checkLength) {
                     if (!fullCallback.test(buffer)) return;
                 }
-                PacketUtils.writeFramedPacket(buffer, idLoop, packetLoop, 0);
+                PacketUtils.writeFramedPacket(state, buffer, packetLoop, false);
             }
             case NetworkContext.Packet.PlayList playList -> {
                 final Collection<ServerPacket.Play> packets = playList.packets();
                 final int[] exception = playList.exception();
                 int index = 0;
                 for (ServerPacket.Play packetLoop : packets) {
-                    final int idLoop = packetLoop.playId();
                     if (exception.length > 0 && Arrays.binarySearch(exception, index++) >= 0) continue;
                     if (buffer.position() >= checkLength) {
                         if (!fullCallback.test(buffer)) return;
                     }
-                    PacketUtils.writeFramedPacket(buffer, idLoop, packetLoop, 0);
+                    PacketUtils.writeFramedPacket(state, buffer, packetLoop, false);
                 }
             }
         }
