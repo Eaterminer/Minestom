@@ -8,11 +8,8 @@ import net.minestom.server.coordinate.CoordConversionUtils;
 import net.minestom.server.coordinate.Point;
 import net.minestom.server.network.packet.server.ServerPacket;
 
-import java.io.Closeable;
 import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.List;
-import java.util.Map;
 import java.util.function.BiConsumer;
 import java.util.function.Supplier;
 
@@ -38,7 +35,7 @@ public final class Broadcast {
             if (!broadcastPackets.isEmpty()) {
                 for (World.Entry entry : world.entries.values()) {
                     if (!entry.receiver) continue;
-                    entry.packetsConsumer.accept(broadcastPackets, new int[0]);
+                    entry.packetsConsumer.accept(broadcastPackets, IntArrays.EMPTY_ARRAY);
                 }
             }
             // View packets
@@ -53,7 +50,7 @@ public final class Broadcast {
 
     public static final class World {
         private final int viewDistance;
-        private final Map<Integer, Entry> entries = new HashMap<>();
+        private final Int2ObjectMap<Entry> entries = new Int2ObjectOpenHashMap<>();
         private final Long2ObjectMap<Chunk> chunks = new Long2ObjectOpenHashMap<>();
         private final IntSet entriesChanged = new IntOpenHashSet();
 
@@ -167,16 +164,16 @@ public final class Broadcast {
             this.entries.values().removeIf(entry -> !entry.alive);
             // Send update packets
             for (Chunk chunk : chunks.values()) {
-                try (PacketStore.Collector collector = chunk.broadcaster.collector()) {
-                    final List<ServerPacket.Play> packets = collector.packets();
-                    if (packets.isEmpty()) continue;
-                    for (int viewerId : chunk.receivers) {
-                        final Entry viewer = entries.get(viewerId);
-                        if (viewer == null) continue;
-                        final int[] exception = collector.exception(viewerId);
-                        consumer.accept(viewerId, packets, exception);
-                    }
+                PacketStore broadcaster = chunk.broadcaster;
+                final List<ServerPacket.Play> packets = broadcaster.packets();
+                if (packets.isEmpty()) continue;
+                for (int viewerId : chunk.receivers) {
+                    final Entry viewer = entries.get(viewerId);
+                    if (viewer == null) continue;
+                    final int[] exception = broadcaster.exception(viewerId);
+                    consumer.accept(viewerId, packets, exception);
                 }
+                broadcaster.clear();
             }
             this.entriesChanged.clear();
         }
@@ -209,6 +206,8 @@ public final class Broadcast {
             }
 
             public void move(Point point) {
+                this.oldChunkX = this.newChunkX;
+                this.oldChunkZ = this.newChunkZ;
                 this.newChunkX = point.chunkX();
                 this.newChunkZ = point.chunkZ();
                 if (oldChunkX == newChunkX && oldChunkZ == newChunkZ) return;
@@ -259,28 +258,19 @@ public final class Broadcast {
             entityIdMap.computeIfAbsent(senderId, id -> new IntArrayList()).add(index);
         }
 
-        public Collector collector() {
-            return new Collector();
+        public List<ServerPacket.Play> packets() {
+            return List.copyOf(this.packets);
         }
 
-        private final class Collector implements Closeable {
-            private final List<ServerPacket.Play> constPackets = List.copyOf(PacketStore.this.packets);
+        public int[] exception(int id) {
+            IntArrayList list = PacketStore.this.entityIdMap.get(id);
+            if (list == null) return IntArrays.EMPTY_ARRAY;
+            return list.toIntArray();
+        }
 
-            public List<ServerPacket.Play> packets() {
-                return constPackets;
-            }
-
-            public int[] exception(int id) {
-                IntArrayList list = PacketStore.this.entityIdMap.get(id);
-                if (list == null) return IntArrays.EMPTY_ARRAY;
-                return list.toIntArray();
-            }
-
-            @Override
-            public void close() {
-                PacketStore.this.packets.clear();
-                PacketStore.this.entityIdMap.clear();
-            }
+        public void clear() {
+            this.packets.clear();
+            this.entityIdMap.clear();
         }
     }
 
